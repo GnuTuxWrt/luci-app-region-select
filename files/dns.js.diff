@@ -1,0 +1,102 @@
+--- a/www/luci-static/resources/view/network/dns.js
++++ b/www/luci-static/resources/view/network/dns.js
+@@ -1,2 +1,2 @@
+-'use strict';'require view';'require dom';'require poll';'require rpc';'require uci';'require form';'require network';'require validation';'require tools.widgets as widgets';'require tools.dnsrecordhandlers as drh';const callHostHints=rpc.declare({object:'luci-rpc',method:'getHostHints',expect:{'':{}}});function validateHostname(sid,s){if(!s)return true;if(s.length>256)
++'use strict';'require view';'require dom';'require poll';'require rpc';'require uci';'require region-select-data as rs';'require form';'require network';'require validation';'require tools.widgets as widgets';'require tools.dnsrecordhandlers as drh';const callHostHints=rpc.declare({object:'luci-rpc',method:'getHostHints',expect:{'':{}}});function validateHostname(sid,s){if(!s)return true;if(s.length>256)
+ return _('Expecting: %s').format(_('valid hostname'));const labels=s.replace(/^\*?\.?|\.$/g,'').split(/\./);for(const label of labels){if(!label.match(/^[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9])?$/i))
+@@ -62,2 +62,95 @@
+ so.value(s.name,s.comment?'%s (%s)'.format(s.name,s.comment):s.name);});so.rmempty=false;so.editable=false;so.datatype='string';so=ss.option(form.DynamicList,'domain',_('FQDN'));so.rmempty=false;so.editable=false;so.datatype='hostname';so=ss.option(form.Value,'table',_('Netfilter table name'),_('Defaults to fw4.'));so.editable=false;so.placeholder='fw4';so.rmempty=true;so=ss.option(form.ListValue,'table_family',_('Table IP family'),_('Defaults to IPv4+6.')+' '+_('Can be hinted by adding 4 or 6 to the name.')+'<br />'+
+-_('Adding an IPv6 to an IPv4 set and vice-versa silently fails.'));so.editable=false;so.rmempty=true;so.value('inet',_('IPv4+6'));so.value('ip',_('IPv4'));so.value('ip6',_('IPv6'));return m.render();}});+_('Adding an IPv6 to an IPv4 set and vice-versa silently fails.'));so.editable=false;so.rmempty=true;so.value('inet',_('IPv4+6'));so.value('ip',_('IPv4'));so.value('ip6',_('IPv6'));/* >>> luci-app-region-select begin >>> */
++/* 说明：DNS 页的选项卡属于 dnsmasq 这个 TypedSection（s.tab('general') 等），
++   所以新选项卡必须挂在同一个 section 上，才会出现在同一个标签栏里。 */
++try{
++var _rsSec=(s&&s.tabs&&s.tabs['general'])?s:null;
++if(!_rsSec)
++for(var _rsi=0;_rsi<m.children.length;_rsi++){
++	var _rsc=m.children[_rsi];
++	if(_rsc&&_rsc.tabs&&_rsc.tabs['general']){_rsSec=_rsc;break;}
++}
++if(_rsSec){
++var _rsEnableOpt=null,_rsProvOpt=null,_rsCarrOpt=null;
++/* 按两个下拉的当前值写入 extraconftext；总开关关闭时什么都不做 */
++var _rsCommit=function(sid){
++	if(_rsEnableOpt&&_rsEnableOpt.formvalue(sid)!='1')return false;
++	var p=_rsProvOpt?_rsProvOpt.formvalue(sid):'',c=_rsCarrOpt?_rsCarrOpt.formvalue(sid):'';
++	var cur=rs.current(sid);
++	if(!p&&!c){ /* 两个都没选 */
++		if((uci.get('dhcp',sid,'extraconftext')||'').trim()!='')return false; /* 已有自定义值，不擅自覆盖 */
++		p='BJ';c='Unicom';
++	}
++	if(!p&&cur)p=cur.prov;
++	if(!c&&cur)c=cur.carr;
++	if(!p||!c)return false;
++	if(cur&&cur.prov==p&&cur.carr==c)return false; /* 值没变，不写也不重启 */
++	return rs.applyECS(sid,p,c);
++};
++_rsSec.tab('regionselect',_('区域选择'),_('开启总开关后，会用所选运营商在当地的代表性 DNS 网段作为 EDNS Client Subnet（dnsmasq add-subnet）向上游提交，让上游 DNS 认为查询来自该地区。'));
++var _rsEnable=_rsSec.taboption('regionselect',form.Flag,'__region_enable__',_('总开关'),_('开启：在 config dnsmasq 写入 extraconftext；关闭：删除整条 extraconftext，不再提交 EDNS Client Subnet。开启时若未选择省份/运营商，默认使用 北京·联通。'));
++_rsEnable.load=function(sid){return rs.isEnabled(sid)?'1':'0';};
++_rsEnable.write=function(sid,val){
++	if(val==this.enabled)_rsCommit(sid);
++	else rs.clearECS(sid);
++};
++_rsEnableOpt=_rsEnable;
++var _rsStatus=_rsSec.taboption('regionselect',form.DummyValue,'__region_status__',_('当前生效'));
++_rsStatus.load=function(sid){
++	if(!rs.isEnabled(sid))return _('已关闭：未设置 extraconftext，DNS 不提交 EDNS Client Subnet');
++	var c=rs.current(sid);
++	if(c)return rs.provName(c.prov)+' · '+rs.carrName(c.carr)+'（add-subnet='+c.cidr+'）';
++	var v=(uci.get('dhcp',sid,'extraconftext')||'').trim();
++	if(v)return _('自定义值 %s，不在预设列表中，可重新选择覆盖').format(v);
++	return _('尚未配置，请选择省份与运营商后保存');
++};
++_rsStatus.write=function(){};
++_rsStatus.remove=function(){return false;};
++var _rsProv=_rsSec.taboption('regionselect',form.ListValue,'__region_prov__',_('省份'));
++for(var _rsp=0;_rsp<rs.PROVINCES.length;_rsp++)
++	_rsProv.value(rs.PROVINCES[_rsp][0],rs.PROVINCES[_rsp][2]);
++_rsProv.load=function(sid){var c=rs.current(sid);return c?c.prov:'';};
++_rsProv.remove=function(){return false;};
++_rsProv.write=function(sid){_rsCommit(sid);};
++_rsProvOpt=_rsProv;
++var _rsCarr=_rsSec.taboption('regionselect',form.ListValue,'__region_carr__',_('运营商'));
++for(var _rscn=0;_rscn<rs.CARRIERS.length;_rscn++)
++	_rsCarr.value(rs.CARRIERS[_rscn][0],rs.CARRIERS[_rscn][2]);
++_rsCarr.load=function(sid){var c=rs.current(sid);return c?c.carr:'';};
++_rsCarr.remove=function(){return false;};
++_rsCarr.write=function(sid){_rsCommit(sid);};
++_rsCarrOpt=_rsCarr;
++/* 保存前统一按"总开关"处理 extraconftext。
++   LuCI 的 Flag 在 parse 阶段的写入门槛依赖 isEqual() 的类型比较（字符串与布尔混用时行为不直观），
++   所以在 map.save 里直接读复选框和两个下拉的当前值，逻辑最确定、只跑一次。 */
++var _rsApplyState=function(){
++	var sid=_rsSec.cfgsections()[0];
++	if(!sid)return null;
++	if(_rsEnableOpt&&_rsEnableOpt.formvalue(sid)=='1')
++		_rsCommit(sid);
++	else
++		rs.clearECS(sid);
++	return sid;
++};
++var _rsNotifyError=function(msg){
++	L.require('ui').then(function(ui){ui.addNotification(null,msg,'error');});
++};
++var _rsSave=m.save.bind(m);
++m.save=function(cb,silent){
++	var sid=_rsApplyState();
++	return _rsSave(cb,silent).then(function(r){
++		var want=sid?rs.takePending():null;
++		if(want!==null){
++			/* 不能在这里等待：uci.apply（写盘）是在本 promise 之后才被框架调用的，
++			   阻塞会让写盘永远等不到。后台轮询到配置真正落盘后再重启 dnsmasq。 */
++			rs.restartWhenCommitted(sid,want).then(null,function(e){
++				_rsNotifyError(_('dnsmasq 重启失败，add-subnet 可能未生效：%s').format((e&&e.message)||e));
++			});
++		}
++		return r;
++	});
++};
++}
++}catch(e){}
++/* <<< luci-app-region-select end <<< */
++return m.render();}});
